@@ -9,6 +9,7 @@ data_env <- new.env()
 
 # set start date
 start_date <- as.Date("2015-01-01")
+end_date <- as.Date('2019-09-21')
 
 # set desired period length or rehedging length
 period_length <- "weekly"
@@ -27,7 +28,7 @@ portfolio_value <- 10000000
 # tidyquamt version of retrieving stock data
 #symbol_prices <- BatchGetSymbols(stock_list)
 
-# function to retrieve stock universe prices
+# function to retrieve stock universe prices, loop gets around yahoo finance slowing api for greater than 5 data pulls
 #symbol_prices <- function(sym, enviro, source = "yahoo", priceType, from = NA){
 #  for(i in 1:length(sym)){
 #    getSymbols(sym[i], env = enviro, src = source, from = start_date)
@@ -49,25 +50,28 @@ stock_prices <- read.csv.zoo(url("http://github.com/kyle-palamar/Beta-Hedged-Por
 #stock_prices <- stock_prices[ , colSums(is.na(stock_prices)) == 0]
 
 # calculate returns
-returns <- do.call(merge, lapply(stock_prices, periodReturn, period = period_length))
+returns <- do.call(merge, lapply(stock_prices, periodReturn, period = period_length)) %>%
+  .[paste0("/", end_date)]
 colnames(returns) <- colnames(stock_prices)
 
-sp500 <- getSymbols("^GSPC", auto.assign = FALSE, from = start_date)
-sp500ad <- Ad(sp500)
-sp500returns <- periodReturn(sp500ad, period = period_length)
+sp500 <- getSymbols("^GSPC", auto.assign = FALSE, from = start_date, to = end_date)
+sp500returns <- Ad(sp500) %>%
+  .[index(returns),] %>%
+  periodReturn(., period = period_length)
 colnames(sp500returns) <- "SP500"
 
 # get 3 month treasury yield
-tbill <- getSymbols("^IRX", from = start_date)
+tbill <- getSymbols("^IRX", from = start_date, auto.assign = FALSE)
 tbill <- 
-  Cl(IRX) %>%
-  na.locf()
+  Cl(tbill) %>%
+  na.locf(.)
 tbill_yield <- (1 + (tbill/100))^(1/252) %>%
   split(period_lengths)
 tbill_period_yield <- lapply(tbill_yield, function(r) cumprod(r)) %>%
   do.call(rbind, .) %>%
-  .[index(sp500returns)] %>%
+  merge(., index(sp500returns), fill = na.locf) %>%
   subtract(1)
+
 
 # calculate standard deviation of market and universe
 rolling_sd <- rollapplyr(returns, width = beta_length, FUN = StdDev)
@@ -166,11 +170,7 @@ colnames(total_upper_return) <- "High Beta Portfolio"
 # determine total portfolio return
 total_return <- total_lower_return + total_upper_return - tbill_weight_return
 colnames(total_return) <- "Portfolio Returns"
-all_returns <- merge(total_return, total_lower_return, total_upper_return)
-
-# add sp500 returns for comparison
-sp500returns_comp <- sp500returns[index(all_returns)]
-all_returns <- merge(all_returns, sp500returns_comp)
+all_returns <- merge(total_return, total_lower_return, total_upper_return, sp500returns)
 
 # determine total cumulative portfolio return
 total_cum_returns <- cumprod(1+total_return)
@@ -185,8 +185,8 @@ plot.zoo(merge(total_cum_returns, total_cum_lower_returns, total_cum_upper_retur
 chart.CumReturns(all_returns, main = "Portfolio Performance",legend.loc = "topleft", wealth.index = TRUE)
 chart.CumReturns(all_returns["2018-08-31/"], main = "Portfolio Performance in Past Year", 
                  legend.loc = "topleft", wealth.index = TRUE)
-charts.PerformanceSummary(all_returns, Rf = tbill_period_yield, wealth.index = TRUE, 
-                          main = "Portfolio Performance")
+chart.Drawdown(all_returns[,c(1,2,4)], geometric = TRUE, 
+               main = "Portfolio Drawdowns", colorset = c("Black", "red", "Blue"), legend.loc = 'bottomleft')
 
 
 # Portfolio Performance Statistics
